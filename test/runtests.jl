@@ -17,7 +17,7 @@ end
 @testset "sparse" begin
     @testset "real" begin
         A = sparse([1, 1, 2, 3, 4], [2, 1, 1, 3, 1], [2.0, -1.0, 6.1, 7.0, 1.5])
-        U, S, V = svds(A)
+        U, S, V = svds(A, 2)
         r2 = svd(Array(A))
 
         testSVDMatch(SVD(U, S, V'), r2)
@@ -25,7 +25,7 @@ end
 
     @testset "complex" begin
         A = sparse([1, 1, 2, 3, 4], [2, 1, 1, 3, 1], exp.(im*[2.0:2:10;]), 5, 4)
-        U, S, V, = svds(A)
+        U, S, V = svds(A, 2)
         r2 = svd(Array(A))
 
         testSVDMatch(SVD(U, S, V'), r2)

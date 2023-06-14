@@ -1,103 +1,122 @@
 module SVDS
 
 export svds
+include("svd.jl")
 
 using LinearAlgebra
 
 function svds(A::AbstractMatrix, k::Integer=6;
     tol::Real=1e-10, dim::Integer=max(3k, 15), maxiter::Integer=10)
 
-    r = minimum(size(A))
+    Arows, Acols = size(A)
+    r = min(Arows, Acols)
 
     k = min(r, k)
-    k <= 0 && throw(ArgumentError("A is empty or k is not positive"))
+    k > 0 || throw(ArgumentError("A is empty or k is not positive"))
 
-    tol < 0 && throw(ArgumentError("Tolerence should not be negative"))
+    tol >= 0 || throw(ArgumentError("Tolerence should not be negative"))
 
     m = min(r, dim)
-    k > m && throw(ArgumentError("Subspace dimension should be greater than k"))
+    k < m || throw(ArgumentError("Subspace dimension should be greater than k"))
 
-    maxiter <= 0 && throw(ArgumentError("Max iterations should be positive"))
-
+    maxiter > 0 || throw(ArgumentError("Max iterations should be positive"))
 
     T = float(eltype(A))
-    v = normalize!(randn(T, size(A, 2)))
-    U, B, V, v, β = lanczos_bidiag(A, 0, m, Nothing[], Nothing[], v)
-    B = Matrix(B)
+    Tr = real(T)
+
+    Um = Matrix{T}(undef, Arows, m)
+    Vm = Matrix{T}(undef, Acols, m)
+    Bm = zeros(Tr, m, m)
+
+    u = Vector{T}(undef, Arows)
+    v = normalize!(randn(T, Acols))
+
+    # Temp buffer of u, v
+    ut = Vector{T}(undef, Arows)
+    vt = Vector{T}(undef, Acols)
+
+    # SVD of Bm
+    U = Matrix{Tr}(undef, m, m)
+    S = Vector{Tr}(undef, m)
+    Vt = Matrix{Tr}(undef, m, m)
+    work = Vector{Tr}(undef, 5m)
+
+    Uk = Matrix{T}(undef, Arows, k)
+    Vk = Matrix{T}(undef, Acols, k)
+
+    ρ = @view work[1:k]
+
+    β = lanczos_bidiag!(A, 0, m, Um, Bm, Vm, u, v, ut, vt)
 
     for iter = 1:maxiter
-        F = svd!(B)
+        svd!(Bm, U, S, Vt, work)
 
-        U *= @view F.U[:, 1:k]
-        V *= @view F.V[:, 1:k]
-        s = @view F.S[1:k]
+        mul!(Uk, Um, @view U[:, 1:k])
+        mul!(Vk, Vm, @view Vt'[:, 1:k])
 
-        ρ = β * @view F.U[end, 1:k]
+        ρ .= β .* @view U[end, 1:k]
 
-        if all(abs.(ρ) .<= tol * s)
-            return U, Vector(s), V
+        if all(abs.(ρ) .<= tol .* @view S[1:k])
+            return Uk, S[1:k], Vk
         end
 
         if iter == maxiter
             @warn "Max iterations reached!"
-            return U, Vector(s), V
+            return Uk, S[1:k], Vk
         end
 
-        U, B, V, v, β = lanczos_bidiag(A, k, m, U, V, v)
-        B = [
-            Diagonal(s) ρ zeros(k, m - k - 1)
-            zeros(m - k, k) B
-        ]
+        copyto!(Um, Uk)
+        copyto!(Vm, Vk)
+
+        fill!(Bm, zero(Tr))
+        for i = 1:k
+            Bm[i, i] = S[i]
+        end
+        Bm[1:k, k+1] = ρ
+        lanczos_bidiag!(A, k, m, Um, Bm, Vm, u, v, ut, vt)
     end
 end
 
-function lanczos_bidiag(A::AbstractMatrix, k::Integer, m::Integer,
-    Uk::AbstractArray, Vk::AbstractArray, v::Vector{T}) where {T}
-
-    Arows, Acols = size(A)
-
-    α = Vector{T}(undef, m - k)
-    β = Vector{T}(undef, m - k - 1)
-
-    U = Matrix{T}(undef, Arows, m)
-    V = Matrix{T}(undef, Acols, m)
-
-    if k > 0
-        copyto!(U, Uk)
-        copyto!(V, Vk)
-    end
+function lanczos_bidiag!(A::AbstractMatrix, k::Integer, m::Integer,
+    U::Matrix{T}, B::Matrix{Tr}, V::Matrix{T}, u::Vector{T}, v::Vector{T},
+    ut::Vector{T}, vt::Vector{T}) where {T,Tr}
 
     V[:, k+1] = v
 
-    u = A * v
+    mul!(u, A, v)
     if k > 0
-        u -= Uk * Uk' * u # Reorthogonalization
+        reorth!(u, @view(U[:, 1:k]), ut, @view vt[1:k])
     end
-    u /= (α[1] = norm(u))
+    u ./= (B[k+1, k+1] = α = norm(u))
     U[:, k+1] = u
 
     for i = 1:m-k-1
-        Vi = @view V[:, 1:k+i]
-        Ui = @view U[:, 1:k+i]
-
-        v = A' * u - α[i] * v
-        v -= Vi * Vi' * v # Reorthogonalization
-        v /= (β[i] = norm(v))
+        mul!(vt, A', u)        # A' * u
+        v .= vt .- α .* v  # v = A' * u - α * v
+        reorth!(v, @view(V[:, 1:k+i]), vt, @view ut[1:k+i])
+        v ./= (B[k+i, k+i+1] = β = norm(v))
         V[:, k+i+1] = v
 
-        u = A * v - β[i] * u
-        u -= Ui * Ui' * u # Reorthogonalization
-        u /= (α[i+1] = norm(u))
+        mul!(ut, A, v)         # A * v
+        u .= ut .- β .* u  # u = A * v - β * u
+        reorth!(u, @view(U[:, 1:k+i]), ut, @view vt[1:k+i])
+        u ./= (B[k+i+1, k+i+1] = α = norm(u))
         U[:, k+i+1] = u
     end
 
-    v = A' * u - α[m-k] * v
-    v -= V * V' * v # Reorthogonalization
-    v /= (βm = norm(v))
+    mul!(vt, A', u)        # A' * u
+    v .= vt .- α .* v  # v = A' * u - α * v
+    reorth!(v, V, vt, @view ut[1:m])
+    v ./= (β = norm(v))
 
-    B = Bidiagonal(α, β, :U)
+    return β
+end
 
-    return U, B, V, v, βm
+# Reorthogonalization: v .-= V * V' * v
+@inline function reorth!(v, V, tcol, trow)
+    mul!(trow, V', v)
+    mul!(tcol, V, trow)
+    v .-= tcol
 end
 
 end
