@@ -1,4 +1,4 @@
-module SVDS
+module SVDSubset
 
 export svds
 include("svd.jl")

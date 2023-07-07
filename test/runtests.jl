@@ -1,4 +1,4 @@
-using SVDS
+using SVDSubset
 using Test, LinearAlgebra, SparseArrays
 
 function testSVDMatch(r1, r2, rank=size(r1.S, 1))
